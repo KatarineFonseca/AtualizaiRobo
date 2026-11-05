@@ -57,6 +57,88 @@ async function readJson(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
+
+// Cookies completos exportados do navegador (opcional, recomendado).
+// Aceita JSON do Cookie-Editor/EditThisCookie ([{name,value,domain,...}]) ou o texto "a=1; b=2".
+function parseCookieExport(raw) {
+  const text = (raw || "").trim();
+  if (!text) return [];
+  try {
+    const list = JSON.parse(text);
+    const arr = Array.isArray(list) ? list : Array.isArray(list?.cookies) ? list.cookies : [];
+    return arr
+      .filter((c) => c && c.name && typeof c.value === "string" && /linkedin\.com$/.test(String(c.domain || ".linkedin.com").replace(/^\./, "").replace(/^www\./, "")))
+      .map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain || ".linkedin.com",
+        path: c.path || "/",
+        secure: c.secure !== false,
+        httpOnly: Boolean(c.httpOnly),
+        ...(c.sameSite && /^(Strict|Lax|None)$/i.test(c.sameSite) ? { sameSite: c.sameSite[0].toUpperCase() + c.sameSite.slice(1).toLowerCase() } : {}),
+      }));
+  } catch {
+    return text.split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
+      const i = part.indexOf("=");
+      const name = part.slice(0, i).trim();
+      const value = part.slice(i + 1).trim();
+      return { name, value, domain: name === "JSESSIONID" ? ".www.linkedin.com" : ".linkedin.com", path: "/", secure: true };
+    }).filter((c) => c.name && c.value);
+  }
+}
+const COOKIE_EXPORT = parseCookieExport(process.env.LINKEDIN_COOKIES);
+
+async function gotoFeed(page) {
+  await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 45_000 });
+}
+
+// Login por cookies em 2 tentativas:
+// 1) cookies completos (LINKEDIN_COOKIES) ou li_at + JSESSIONID;
+// 2) se der loop de redirecionamento: limpa tudo, visita a home sem login para o LinkedIn
+//    criar os cookies de navegador (bcookie/JSESSIONID) e só então injeta o li_at.
+async function loginAndOpenFeed(page, expired) {
+  const cdp = await page.target().createCDPSession();
+  const baseCookies = () => {
+    if (COOKIE_EXPORT.length) return COOKIE_EXPORT;
+    const list = [];
+    if (LI_AT) list.push({ name: "li_at", value: LI_AT, domain: ".linkedin.com", path: "/", secure: true, httpOnly: true });
+    if (JSESSIONID) list.push({ name: "JSESSIONID", value: `"${JSESSIONID}"`, domain: ".www.linkedin.com", path: "/", secure: true });
+    return list;
+  };
+  if (!baseCookies().length) {
+    // sem cookies configurados: tenta a sessão guardada na pasta
+    try { await gotoFeed(page); return; } catch (err) {
+      if (/TOO_MANY_REDIRECTS/.test(err.message)) throw new Error(expired("nenhum cookie configurado"));
+      throw err;
+    }
+  }
+  await cdp.send("Network.clearBrowserCookies");
+  await page.setCookie(...baseCookies());
+  try {
+    await gotoFeed(page);
+    return;
+  } catch (err) {
+    if (!/TOO_MANY_REDIRECTS|ERR_ABORTED/.test(err.message)) throw err;
+    console.warn("Loop de redirecionamento na 1ª tentativa; tentando com aquecimento.");
+  }
+  await cdp.send("Network.clearBrowserCookies");
+  try {
+    await page.goto("https://www.linkedin.com/", { waitUntil: "domcontentloaded", timeout: 45_000 });
+  } catch { /* só queremos os cookies de navegador */ }
+  await human();
+  const loginOnly = (COOKIE_EXPORT.length ? COOKIE_EXPORT : baseCookies()).filter((c) => c.name === "li_at");
+  if (!loginOnly.length) throw new Error(expired("li_at não encontrado nos cookies exportados"));
+  await page.setCookie(...loginOnly);
+  try {
+    await gotoFeed(page);
+  } catch (err) {
+    if (/TOO_MANY_REDIRECTS|ERR_ABORTED/.test(err.message)) {
+      throw new Error(expired("o LinkedIn ficou redirecionando mesmo após nova tentativa — o li_at foi invalidado. Isso acontece quando você sai da conta (logout) no navegador ou o LinkedIn bloqueia o IP do servidor"));
+    }
+    throw err;
+  }
+}
+
 async function withBrowser(fn) {
   const browser = await puppeteer.launch({
     headless: HEADLESS,
@@ -69,23 +151,9 @@ async function withBrowser(fn) {
     // Mesmo navegador do usuário (opcional): o LinkedIn desconfia quando a sessão muda de navegador.
     if (USER_AGENT) await page.setUserAgent(USER_AGENT);
     await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8" });
-    if (LI_AT) {
-      // Cookies antigos guardados na pasta de sessão brigam com o li_at novo e causam
-      // ERR_TOO_MANY_REDIRECTS. Limpa tudo e usa só o li_at informado.
-      const cdp = await page.target().createCDPSession();
-      await cdp.send("Network.clearBrowserCookies");
-      const cookies = [{ name: "li_at", value: LI_AT, domain: ".linkedin.com", path: "/", secure: true, httpOnly: true }];
-      if (JSESSIONID) cookies.push({ name: "JSESSIONID", value: `"${JSESSIONID}"`, domain: ".www.linkedin.com", path: "/", secure: true });
-      await page.setCookie(...cookies);
-    }
     const expired = (why) =>
-      `Sessão do LinkedIn expirada ou recusada (${why}). Pegue um novo cookie li_at (F12 → Application → Cookies → linkedin.com), atualize LINKEDIN_LI_AT no Railway e tente de novo.`;
-    try {
-      await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 45_000 });
-    } catch (err) {
-      if (/TOO_MANY_REDIRECTS|ERR_ABORTED/.test(err.message)) throw new Error(expired("o LinkedIn ficou redirecionando"));
-      throw err;
-    }
+      `Sessão do LinkedIn expirada ou recusada (${why}). Exporte os cookies do LinkedIn (extensão Cookie-Editor → Export → JSON) e cole em LINKEDIN_COOKIES no Railway, ou pegue um li_at novo e atualize LINKEDIN_LI_AT. Depois tente de novo.`;
+    await loginAndOpenFeed(page, expired);
     await human();
     const url1 = page.url();
     if (/checkpoint|challenge/.test(url1)) {
@@ -235,7 +303,7 @@ http.createServer(async (req, res) => {
   if (!authorized(req)) return send(res, 401, { ok: false, error: "unauthorized" });
 
   if (req.method === "GET" && path === "health") {
-    return send(res, 200, { ok: true, busy, session: Boolean(LI_AT) || fs.readdirSync(SESSION_DIR).length > 0 });
+    return send(res, 200, { ok: true, busy, session: Boolean(LI_AT) || COOKIE_EXPORT.length > 0 || fs.readdirSync(SESSION_DIR).length > 0 });
   }
   const action = actions[path];
   if (req.method !== "POST" || !action) return send(res, 404, { ok: false, error: "not_found" });
