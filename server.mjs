@@ -210,7 +210,12 @@ const actions = {
     await page.waitForSelector("main h1", { timeout: 20_000 }).catch(() => {});
     const shots = [];
     const shot = async () => {
-      shots.push(await page.screenshot({ type: "jpeg", quality: 55, encoding: "base64" }));
+      // A captura é opcional: no servidor sem tela o Chrome às vezes falha; seguimos só com o texto.
+      try {
+        shots.push(await page.screenshot({ type: "jpeg", quality: 55, encoding: "base64", captureBeyondViewport: false }));
+      } catch (err) {
+        console.warn("captura ignorada:", err?.message || err);
+      }
     };
     await shot();
     // rola devagar para o LinkedIn carregar Sobre/Experiência/Competências
