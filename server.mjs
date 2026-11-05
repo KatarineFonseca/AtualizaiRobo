@@ -63,13 +63,36 @@ async function withBrowser(fn) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 900 });
     if (LI_AT) {
-      await page.setCookie({ name: "li_at", value: LI_AT, domain: ".linkedin.com", path: "/", secure: true, httpOnly: true });
+      // Cookies antigos guardados na pasta de sessão brigam com o li_at novo e causam
+      // ERR_TOO_MANY_REDIRECTS. Limpa tudo e usa só o li_at informado.
+      const cdp = await page.target().createCDPSession();
+      await cdp.send("Network.clearBrowserCookies");
+      await page.setCookie({ name: "li_at", value: LI_AT.trim(), domain: ".www.linkedin.com", path: "/", secure: true, httpOnly: true });
     }
-    await page.goto("https://www.linkedin.com/in/me/", { waitUntil: "domcontentloaded", timeout: 45_000 });
+    const expired = "Sessão do LinkedIn expirada ou recusada. Pegue um novo cookie li_at (F12 → Application → Cookies → linkedin.com), atualize LINKEDIN_LI_AT no Railway e tente de novo.";
+    try {
+      await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 45_000 });
+    } catch (err) {
+      if (/TOO_MANY_REDIRECTS|ERR_ABORTED/.test(err.message)) throw new Error(expired);
+      throw err;
+    }
     await human();
-    if (/login|checkpoint|authwall/.test(page.url())) {
-      throw new Error("Sessão do LinkedIn inválida: atualize LINKEDIN_LI_AT.");
+    if (/login|checkpoint|authwall|uas\//.test(page.url())) throw new Error(expired);
+    // descobre o endereço do próprio perfil pelo menu (evita o redirecionamento de /in/me/)
+    const profileUrl = await page.evaluate(() => {
+      const a = Array.from(document.querySelectorAll("a[href*='/in/']"))
+        .map((el) => el.href.split("?")[0])
+        .find((href) => /linkedin\.com\/in\/[^/]+\/?$/.test(href));
+      return a || null;
+    });
+    try {
+      await page.goto(profileUrl || "https://www.linkedin.com/in/me/", { waitUntil: "domcontentloaded", timeout: 45_000 });
+    } catch (err) {
+      if (/TOO_MANY_REDIRECTS/.test(err.message)) throw new Error(expired);
+      throw err;
     }
+    await human();
+    if (/login|checkpoint|authwall/.test(page.url())) throw new Error(expired);
     return await fn(page);
   } finally {
     await browser.close();
