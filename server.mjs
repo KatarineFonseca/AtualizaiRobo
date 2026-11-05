@@ -231,8 +231,19 @@ async function save(page) {
 
 // Leitura pelos dados internos do LinkedIn (mesma sessão do navegador), sem abrir a página do perfil.
 async function readProfileViaApi(page, ctx) {
-  const result = await page.evaluate(async (publicIdIn) => {
-    const csrf = (document.cookie.match(/JSESSIONID="?([^";]+)/) || [])[1] || "";
+  // A página pode ter ficado numa tela de erro (loop de redirecionamento), onde document.cookie é bloqueado.
+  // Volta para o feed e lê o JSESSIONID pelo próprio navegador (CDP), não pela página.
+  try {
+    await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 45000 });
+  } catch (err) {
+    throw new Error(`${ctx.blockedMsg} (leitura alternativa também falhou ao voltar ao feed: ${err.message})`);
+  }
+  if (!/^https:\/\/www\.linkedin\.com\//.test(page.url()) || /login|checkpoint|authwall/.test(page.url())) {
+    throw new Error(`${ctx.blockedMsg} (leitura alternativa: o LinkedIn não deixou voltar ao feed)`);
+  }
+  const all = await page.cookies("https://www.linkedin.com/");
+  const csrfCookie = (all.find((c) => c.name === "JSESSIONID")?.value || "").replace(/^"+|"+$/g, "");
+  const result = await page.evaluate(async (publicIdIn, csrf) => {
     const get = async (path) => {
       const r = await fetch(path, {
         credentials: "include",
@@ -272,7 +283,7 @@ async function readProfileViaApi(page, ctx) {
       educationRaw: educations.join("\n\n"),
       skillsRaw: skills.join("\n"),
     };
-  }, ctx.publicId).catch((err) => {
+  }, ctx.publicId, csrfCookie).catch((err) => {
     throw new Error(`${ctx.blockedMsg} (leitura alternativa também falhou: ${err.message})`);
   });
   if (!result.headline && !result.aboutRaw && !result.experienceRaw) {
