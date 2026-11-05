@@ -5,6 +5,8 @@ Robô que aplica título, sobre e experiência no seu LinkedIn.
 ## Variáveis
 - `WORKER_TOKEN` (obrigatório, 24+ caracteres) — o mesmo do campo "Token" no painel Admin.
 - `LINKEDIN_LI_AT` — cookie `li_at` da sua conta (navegador → F12 → Application → Cookies → linkedin.com).
+- `LINKEDIN_JSESSIONID` (opcional) — cookie `JSESSIONID` da mesma tela; ajuda o LinkedIn a aceitar a sessão.
+- `LINKEDIN_USER_AGENT` (opcional) — identificação do seu navegador (abra https://www.whatismybrowser.com/detect/what-is-my-user-agent e copie). Use o mesmo navegador de onde copiou o li_at.
 - `HEADLESS` — `false` para ver o navegador (só em máquina com tela).
 
 ## Subir (Railway, Fly.io, Render ou VPS com Docker)

@@ -11,7 +11,11 @@ puppeteer.use(Stealth());
 
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.WORKER_TOKEN || "";
-const LI_AT = process.env.LINKEDIN_LI_AT || ""; // cookie de sessão "li_at" da sua conta
+// Aceita o valor colado com aspas, espaços ou com o prefixo "li_at=".
+const cleanCookie = (v) => (v || "").trim().replace(/^(li_at|JSESSIONID)=/i, "").replace(/^"+|"+$/g, "").replace(/;.*$/, "").trim();
+const LI_AT = cleanCookie(process.env.LINKEDIN_LI_AT); // cookie de sessão "li_at" da sua conta
+const JSESSIONID = cleanCookie(process.env.LINKEDIN_JSESSIONID); // opcional
+const USER_AGENT = (process.env.LINKEDIN_USER_AGENT || "").trim(); // opcional: o mesmo do seu navegador
 const SESSION_DIR = process.env.SESSION_DIR || "./session";
 const HEADLESS = process.env.HEADLESS !== "false";
 
@@ -62,22 +66,32 @@ async function withBrowser(fn) {
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 900 });
+    // Mesmo navegador do usuário (opcional): o LinkedIn desconfia quando a sessão muda de navegador.
+    if (USER_AGENT) await page.setUserAgent(USER_AGENT);
+    await page.setExtraHTTPHeaders({ "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8" });
     if (LI_AT) {
       // Cookies antigos guardados na pasta de sessão brigam com o li_at novo e causam
       // ERR_TOO_MANY_REDIRECTS. Limpa tudo e usa só o li_at informado.
       const cdp = await page.target().createCDPSession();
       await cdp.send("Network.clearBrowserCookies");
-      await page.setCookie({ name: "li_at", value: LI_AT.trim(), domain: ".www.linkedin.com", path: "/", secure: true, httpOnly: true });
+      const cookies = [{ name: "li_at", value: LI_AT, domain: ".linkedin.com", path: "/", secure: true, httpOnly: true }];
+      if (JSESSIONID) cookies.push({ name: "JSESSIONID", value: `"${JSESSIONID}"`, domain: ".www.linkedin.com", path: "/", secure: true });
+      await page.setCookie(...cookies);
     }
-    const expired = "Sessão do LinkedIn expirada ou recusada. Pegue um novo cookie li_at (F12 → Application → Cookies → linkedin.com), atualize LINKEDIN_LI_AT no Railway e tente de novo.";
+    const expired = (why) =>
+      `Sessão do LinkedIn expirada ou recusada (${why}). Pegue um novo cookie li_at (F12 → Application → Cookies → linkedin.com), atualize LINKEDIN_LI_AT no Railway e tente de novo.`;
     try {
       await page.goto("https://www.linkedin.com/feed/", { waitUntil: "domcontentloaded", timeout: 45_000 });
     } catch (err) {
-      if (/TOO_MANY_REDIRECTS|ERR_ABORTED/.test(err.message)) throw new Error(expired);
+      if (/TOO_MANY_REDIRECTS|ERR_ABORTED/.test(err.message)) throw new Error(expired("o LinkedIn ficou redirecionando"));
       throw err;
     }
     await human();
-    if (/login|checkpoint|authwall|uas\//.test(page.url())) throw new Error(expired);
+    const url1 = page.url();
+    if (/checkpoint|challenge/.test(url1)) {
+      throw new Error("O LinkedIn pediu verificação de segurança para o robô. Entre no LinkedIn pelo seu navegador, confirme o acesso se aparecer aviso, copie um li_at novo e atualize LINKEDIN_LI_AT no Railway.");
+    }
+    if (/login|authwall|uas\//.test(url1)) throw new Error(expired("o LinkedIn mandou para a tela de login"));
     // descobre o endereço do próprio perfil pelo menu (evita o redirecionamento de /in/me/)
     const profileUrl = await page.evaluate(() => {
       const a = Array.from(document.querySelectorAll("a[href*='/in/']"))
@@ -88,11 +102,11 @@ async function withBrowser(fn) {
     try {
       await page.goto(profileUrl || "https://www.linkedin.com/in/me/", { waitUntil: "domcontentloaded", timeout: 45_000 });
     } catch (err) {
-      if (/TOO_MANY_REDIRECTS/.test(err.message)) throw new Error(expired);
+      if (/TOO_MANY_REDIRECTS/.test(err.message)) throw new Error(expired("o LinkedIn ficou redirecionando no perfil"));
       throw err;
     }
     await human();
-    if (/login|checkpoint|authwall/.test(page.url())) throw new Error(expired);
+    if (/login|checkpoint|authwall/.test(page.url())) throw new Error(expired("o perfil pediu login"));
     return await fn(page);
   } finally {
     await browser.close();
