@@ -161,21 +161,46 @@ async function withBrowser(fn) {
     }
     if (/login|authwall|uas\//.test(url1)) throw new Error(expired("o LinkedIn mandou para a tela de login"));
     // descobre o endereço do próprio perfil pelo menu (evita o redirecionamento de /in/me/)
-    const profileUrl = await page.evaluate(() => {
+    // Ordem: LINKEDIN_PROFILE_URL fixo → link do menu → "publicIdentifier" no código do feed → /in/me/.
+    const fixedUrl = (process.env.LINKEDIN_PROFILE_URL || "").trim();
+    const found = await page.evaluate(() => {
       const a = Array.from(document.querySelectorAll("a[href*='/in/']"))
         .map((el) => el.href.split("?")[0])
-        .find((href) => /linkedin\.com\/in\/[^/]+\/?$/.test(href));
-      return a || null;
-    });
-    try {
-      await page.goto(profileUrl || "https://www.linkedin.com/in/me/", { waitUntil: "domcontentloaded", timeout: 45_000 });
-    } catch (err) {
-      if (/TOO_MANY_REDIRECTS/.test(err.message)) throw new Error(expired("o LinkedIn ficou redirecionando no perfil"));
-      throw err;
+        .find((href) => /linkedin\.com\/in\/[^/]+\/?$/.test(href) && !/\/in\/me\/?$/.test(href));
+      if (a) return a;
+      const m = document.documentElement.innerHTML.match(/"publicIdentifier":"([^"]+)"/);
+      return m ? `https://www.linkedin.com/in/${m[1]}/` : null;
+    }).catch(() => null);
+    const candidates = [fixedUrl, found, "https://www.linkedin.com/in/me/"].filter(Boolean);
+    let opened = false;
+    let lastErr = null;
+    for (const url of [...new Set(candidates)]) {
+      try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+        opened = true;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (!/TOO_MANY_REDIRECTS|ERR_ABORTED/.test(err.message)) throw err;
+        console.warn("Redirecionamento ao abrir", url);
+        await human();
+      }
+    }
+    if (!opened) {
+      // A página do perfil entra em loop (comum em servidores). Volta ao feed e lê pelos dados internos.
+      console.warn("Perfil em loop; usando leitura pelo feed.", lastErr?.message);
+      try { await gotoFeed(page); } catch { /* segue */ }
+      return await fn(page, {
+        onFeed: true,
+        publicId: (fixedUrl || found || "").match(/\/in\/([^/?#]+)/)?.[1] || null,
+        blockedMsg: fixedUrl
+          ? expired("o LinkedIn ficou redirecionando no perfil")
+          : "O robô entrou no LinkedIn, mas não conseguiu abrir seu perfil. Crie LINKEDIN_PROFILE_URL no Railway com o endereço do seu perfil e tente de novo.",
+      });
     }
     await human();
     if (/login|checkpoint|authwall/.test(page.url())) throw new Error(expired("o perfil pediu login"));
-    return await fn(page);
+    return await fn(page, { onFeed: false });
   } finally {
     await browser.close();
   }
@@ -204,9 +229,67 @@ async function save(page) {
   await sleep(3000);
 }
 
+// Leitura pelos dados internos do LinkedIn (mesma sessão do navegador), sem abrir a página do perfil.
+async function readProfileViaApi(page, ctx) {
+  const result = await page.evaluate(async (publicIdIn) => {
+    const csrf = (document.cookie.match(/JSESSIONID="?([^";]+)/) || [])[1] || "";
+    const get = async (path) => {
+      const r = await fetch(path, {
+        credentials: "include",
+        headers: { "csrf-token": csrf, "x-restli-protocol-version": "2.0.0", accept: "application/json" },
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status} em ${path.split("?")[0]}`);
+      return r.json();
+    };
+    let publicId = publicIdIn;
+    if (!publicId) {
+      const me = await get("/voyager/api/me");
+      publicId = me?.miniProfile?.publicIdentifier
+        || (me?.included || []).find((x) => x.publicIdentifier)?.publicIdentifier;
+    }
+    if (!publicId) throw new Error("não achei o identificador do perfil");
+    const view = await get(`/voyager/api/identity/profiles/${encodeURIComponent(publicId)}/profileView`);
+    const inc = view?.included || [];
+    const prof = view?.profile || inc.find((x) => x.$type?.endsWith(".Profile") && x.headline !== undefined) || {};
+    const byType = (t) => inc.filter((x) => x.$type?.endsWith(t));
+    const period = (tp) => {
+      if (!tp) return "";
+      const f = (d) => (d ? `${d.month ? d.month + "/" : ""}${d.year || ""}` : "atual");
+      return `${f(tp.startDate)} - ${f(tp.endDate)}`;
+    };
+    const positions = (view?.positionView?.elements || byType(".Position"))
+      .map((p) => [p.title, p.companyName, period(p.timePeriod), p.locationName, p.description].filter(Boolean).join("\n"));
+    const educations = (view?.educationView?.elements || byType(".Education"))
+      .map((e) => [e.schoolName, e.degreeName, e.fieldOfStudy, period(e.timePeriod)].filter(Boolean).join("\n"));
+    const skills = (view?.skillView?.elements || byType(".Skill")).map((k) => k.name).filter(Boolean);
+    return {
+      name: [prof.firstName, prof.lastName].filter(Boolean).join(" "),
+      headline: prof.headline || "",
+      location: prof.locationName || prof.geoLocationName || "",
+      url: `https://www.linkedin.com/in/${publicId}/`,
+      aboutRaw: prof.summary || "",
+      experienceRaw: positions.join("\n\n"),
+      educationRaw: educations.join("\n\n"),
+      skillsRaw: skills.join("\n"),
+    };
+  }, ctx.publicId).catch((err) => {
+    throw new Error(`${ctx.blockedMsg} (leitura alternativa também falhou: ${err.message})`);
+  });
+  if (!result.headline && !result.aboutRaw && !result.experienceRaw) {
+    throw new Error(`${ctx.blockedMsg} (leitura alternativa voltou vazia)`);
+  }
+  const cut = (s, n) => (s || "").slice(0, n);
+  return {
+    name: cut(result.name, 200), headline: cut(result.headline, 600), location: cut(result.location, 200),
+    url: cut(result.url, 400), aboutRaw: cut(result.aboutRaw, 12000), experienceRaw: cut(result.experienceRaw, 20000),
+    educationRaw: cut(result.educationRaw, 12000), skillsRaw: cut(result.skillsRaw, 12000), screenshots: [],
+  };
+}
+
 const actions = {
   // Lê o perfil atual (somente leitura): textos das seções + até 3 capturas.
-  async read_profile(page) {
+  async read_profile(page, _body, ctx = {}) {
+    if (ctx.onFeed) return await readProfileViaApi(page, ctx);
     await page.waitForSelector("main h1", { timeout: 20_000 }).catch(() => {});
     const shots = [];
     const shot = async () => {
@@ -317,7 +400,7 @@ http.createServer(async (req, res) => {
   busy = true;
   try {
     const body = await readJson(req);
-    const result = await withBrowser((page) => action(page, body));
+    const result = await withBrowser((page, ctx) => action(page, body, ctx));
     console.log(`[${requestId}] ${path} ok`);
     send(res, 200, { ok: true, requestId, ...result });
   } catch (err) {
