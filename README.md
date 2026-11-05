@@ -10,7 +10,7 @@ Robô que aplica título, sobre e experiência no seu LinkedIn.
 ## Subir (Railway, Fly.io, Render ou VPS com Docker)
 ```
 docker build -t atualizai-worker .
-docker run -d -p 8080:8080 -e WORKER_TOKEN=... -e LINKEDIN_LI_AT=... -v $(pwd)/session:/app/session atualizai-worker
+docker run -d -p 8080:8080 -e WORKER_TOKEN=... -e LINKEDIN_LI_AT=... -v $(pwd)/session:/home/pptruser/app/session atualizai-worker
 ```
 Precisa de HTTPS público (Railway/Fly/Render dão automático; em VPS use Caddy/Nginx).
 
