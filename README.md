@@ -8,6 +8,7 @@ Robô que aplica título, sobre e experiência no seu LinkedIn.
 - `LINKEDIN_COOKIES` (opcional, recomendado) — todos os cookies do LinkedIn exportados do navegador
   (extensão Cookie-Editor → abrir em linkedin.com → Export → JSON). Tem prioridade sobre `LINKEDIN_LI_AT`
   e evita o erro "o LinkedIn ficou redirecionando".
+- `LINKEDIN_PROFILE_URL` (opcional, recomendado) — endereço do seu perfil, ex.: https://www.linkedin.com/in/seu-nome/. Evita o erro "redirecionando no perfil".
 - `LINKEDIN_JSESSIONID` (opcional) — cookie `JSESSIONID` da mesma tela; ajuda o LinkedIn a aceitar a sessão.
 - `LINKEDIN_USER_AGENT` (opcional) — identificação do seu navegador (abra https://www.whatismybrowser.com/detect/what-is-my-user-agent e copie). Use o mesmo navegador de onde copiou o li_at.
 - `HEADLESS` — `false` para ver o navegador (só em máquina com tela).
