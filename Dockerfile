@@ -3,7 +3,7 @@ FROM ghcr.io/puppeteer/puppeteer:23.11.1
 WORKDIR /home/pptruser/app
 COPY --chown=pptruser:pptruser package.json ./
 RUN npm install --omit=dev --no-audit --no-fund
-COPY --chown=pptruser:pptruser server.mjs ./
+COPY --chown=pptruser:pptruser server.mjs profile-editor.mjs ./
 ENV PORT=8080
 ENV SESSION_DIR=/home/pptruser/app/session
 EXPOSE 8080

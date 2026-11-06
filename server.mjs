@@ -6,6 +6,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import puppeteer from "puppeteer-extra";
 import Stealth from "puppeteer-extra-plugin-stealth";
+import { openProfileEditor } from "./profile-editor.mjs";
 
 puppeteer.use(Stealth());
 
@@ -224,7 +225,7 @@ async function typeInto(page, selector, text) {
 
 async function save(page) {
   await human();
-  const ok = await clickByText(page, "button", /^(Salvar|Save)$/i);
+  const ok = await clickByText(page, "[role='dialog'] button", /^(Salvar|Save)$/i);
   if (!ok) throw new Error("Botão Salvar não encontrado.");
   await sleep(3000);
 }
@@ -355,23 +356,23 @@ const actions = {
       screenshots: shots.slice(0, 3),
     };
   },
-  async apply_headline(page, body) {
+  async apply_headline(page, body, ctx) {
     const text = pickText(body, ["text", "headline", "value"]);
     if (!text) throw new Error("Informe 'text' (ou 'headline').");
-    await page.goto("https://www.linkedin.com/in/me/edit/intro/", { waitUntil: "domcontentloaded" });
-    await typeInto(page, "textarea[id*='headline'], input[id*='headline']", text.slice(0, 220));
+    const field = await openProfileEditor(page, "intro", ctx);
+    await typeInto(page, field, text.slice(0, 220));
     await save(page);
     return { applied: "headline" };
   },
-  async apply_about(page, body) {
+  async apply_about(page, body, ctx) {
     const text = pickText(body, ["text", "about", "value"]);
     if (!text) throw new Error("Informe 'text' (ou 'about').");
-    await page.goto("https://www.linkedin.com/in/me/edit/forms/summary/new/", { waitUntil: "domcontentloaded" });
-    await typeInto(page, "textarea", text.slice(0, 2600));
+    const field = await openProfileEditor(page, "about", ctx);
+    await typeInto(page, field, text.slice(0, 2600));
     await save(page);
     return { applied: "about" };
   },
-  async apply_experience(page, body) {
+  async apply_experience(page, body, ctx) {
     const item = Array.isArray(body?.experience)
       ? body.experience.find((entry) => entry && typeof entry === "object")
       : null;
@@ -383,14 +384,14 @@ const actions = {
       description = item.bullets.filter((b) => typeof b === "string").map((b) => `• ${b}`).join("\n");
     }
     if (!title || !company) throw new Error("Informe 'title' e 'company'.");
-    await page.goto("https://www.linkedin.com/in/me/add-edit/POSITION/", { waitUntil: "domcontentloaded" });
-    await typeInto(page, "input[id*='title']", title.slice(0, 100));
+    const field = await openProfileEditor(page, "experience", ctx);
+    await typeInto(page, field, title.slice(0, 100));
     await human();
-    await typeInto(page, "input[id*='requiredCompany'], input[id*='company']", company.slice(0, 100));
+    await typeInto(page, "[role='dialog'] input[id*='requiredCompany'], [role='dialog'] input[id*='company']", company.slice(0, 100));
     await sleep(1500);
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
-    if (description) await typeInto(page, "textarea[id*='description']", description.slice(0, 2000));
+    if (description) await typeInto(page, "[role='dialog'] textarea[id*='description']", description.slice(0, 2000));
     await save(page);
     return { applied: "experience" };
   },

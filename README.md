@@ -2,6 +2,12 @@
 
 Robô que aplica título, sobre e experiência no seu LinkedIn.
 
+## Atualizar esta versão
+Substitua `server.mjs` e `Dockerfile` e inclua `profile-editor.mjs` na mesma pasta no GitHub.
+Aguarde o Railway concluir o Deploy antes de testar. Não basta substituir apenas `server.mjs`.
+A edição usa os links do perfil real, não `/in/me/`. Se não conseguir abrir o formulário,
+nenhuma alteração é salva; a leitura alternativa pelo feed não permite editar.
+
 ## Variáveis
 - `WORKER_TOKEN` (obrigatório, 24+ caracteres) — o mesmo do campo "Token" no painel Admin.
 - `LINKEDIN_LI_AT` — cookie `li_at` da sua conta (navegador → F12 → Application → Cookies → linkedin.com).
